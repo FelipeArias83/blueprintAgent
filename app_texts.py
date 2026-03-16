@@ -47,17 +47,29 @@ TUTORIAL_MARKDOWN = """
 Esta app analiza la estructura de un proyecto y te ayuda a generar documentacion automaticamente.
 
 **Que hace la app**
-1. Detecta la carpeta objetivo desde tu prompt o usa la carpeta actual.
-2. Indexa archivos en ChromaDB local para recuperar contexto relevante.
-3. Usa Gemini para analizar y proponer documentacion.
-4. Si pides un archivo, lo crea en `output/`.
+1. Pide un **Nombre de Sesión** para aislar tus datos de otros usuarios.
+2. Detecta la carpeta objetivo desde tu prompt o usa la carpeta actual.
+3. Indexa archivos en ChromaDB local (aislado por sesión) para recuperar contexto relevante.
+4. Usa Gemini para analizar y proponer documentacion.
+5. Si pides un archivo, lo crea en `output/session_<id>/`.
+6. Registra todos los eventos en logs estructurados para auditar y depurar.
+
+**Aislamiento de Sesión**
+- Cada usuario/sesión tiene su propio:
+  - `Nombre de Sesión` (identificador amigable)
+  - Carpeta de output: `output/session_<id>/`
+  - Colección ChromaDB independiente
+  - Registro de eventos en logs
+- Archivos y datos NO se comparten entre sesiones.
+- Limpieza automática después de 24 horas de inactividad.
 
 **Capacidades principales**
 - Analizar estructura de carpetas y archivos de un proyecto.
 - Resumir modulos, responsabilidades y flujo general de la aplicacion.
 - Buscar texto o patrones dentro de archivos del proyecto.
 - Generar documentacion tecnica en formato Markdown.
-- Crear artefactos en `output/` (por ejemplo `README.md`, guias, reportes).
+- Crear artefactos en `output/session_<id>/`.
+- Ver registro de eventos y auditar actividad de sesion.
 
 **Tipos de ayuda que puedes pedir**
 - README de proyecto.
@@ -67,11 +79,14 @@ Esta app analiza la estructura de un proyecto y te ayuda a generar documentacion
 - Sugerencias de estructura para escalar el proyecto.
 
 **Como usarla**
-1. Sube un archivo `.zip` del proyecto (recomendado para servidor).
-2. Escribe en el chat que quieres analizar.
-3. Si no subes `.zip`, puedes indicar una ruta local en el prompt.
-4. Pide el archivo final (ejemplo: `README.md`).
-5. Descarga el README con el boton cuando aparezca.
+1. Ingresa un **Nombre de Sesión** en la barra lateral (obligatorio).
+2. Ingresa tu `GOOGLE_API_KEY` para acceder a Gemini.
+3. Sube un archivo `.zip` del proyecto (opcional; recomendado para servidor).
+4. Escribe en el chat que quieres analizar.
+5. Si no subes `.zip`, puedes indicar una ruta local en el prompt.
+6. Pide el archivo final (ejemplo: `README.md`).
+7. Descarga el README con el boton cuando aparezca.
+8. (Opcional) Usa "Ver últimos logs" para auditar eventos de tu sesión.
 
 **Plantillas utiles (copiar y pegar)**
 - `Analiza mi proyecto y genera un README.md profesional en /output con secciones: descripcion, arquitectura, instalacion, uso y roadmap.`
@@ -90,13 +105,17 @@ Esta app analiza la estructura de un proyecto y te ayuda a generar documentacion
 - Indica el stack (Python, Java, Node, etc.) y el tipo de audiencia (dev, negocio, onboarding).
 - Pide estructura explicita: "incluye tabla de contenidos, pasos de instalacion y comandos".
 - Si quieres una ruta concreta, incluyela textual en el prompt.
+- Usa nombres de sesion descriptivos (ej: "proyecto-web-v2") para facilitar auditoría.
 
 **Notas importantes**
-- La app solo escribe dentro de `output/`.
+- La app solo escribe dentro de `output/session_<id>/` (aislado por sesión).
+- Cada sesión tiene su propia colección ChromaDB; no mezcla contexto.
 - La base `chroma_db/` es local y acelera el contexto entre consultas.
 - Debes ingresar `GOOGLE_API_KEY` en la barra lateral para usar el chat.
+- Debes ingresar **Nombre de Sesión** para continuar.
 - Si cambias muchos archivos, vuelve a pedir el analisis para refrescar contexto.
 - Si la ruta objetivo no existe, la herramienta reportara error de validacion.
+- Los logs se guardan en `logs/multisession.log` con timestamp, evento, status y detalles.
 """
 
 # LLM system prompt template

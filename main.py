@@ -112,6 +112,28 @@ def log_multisession_event(
 		pass
 
 
+def get_last_n_log_events(n: int = 20) -> list[dict[str, Any]]:
+	"""Read the last n events from the multisession log, filtering by current session."""
+	if not MULTISESSION_LOG_PATH.exists():
+		return []
+	try:
+		current_session_id = st.session_state.get("session_id", "")
+		all_events = []
+		with MULTISESSION_LOG_PATH.open("r", encoding="utf-8") as log_file:
+			for line in log_file:
+				if not line.strip():
+					continue
+				try:
+					event = json.loads(line)
+					if event.get("session_id") == current_session_id:
+						all_events.append(event)
+				except json.JSONDecodeError:
+					continue
+		return all_events[-n:] if all_events else []
+	except Exception:
+		return []
+
+
 def get_session_id() -> str:
 	session_id = st.session_state.get("session_id", "")
 	if not session_id:
@@ -717,6 +739,22 @@ def main() -> None:
 		if not normalized_session_name:
 			st.warning("Debes ingresar un nombre de sesion para continuar.")
 			st.stop()
+
+		# Button to view last 20 log events
+		if st.button("📋 Ver ultimos logs", use_container_width=True):
+			log_events = get_last_n_log_events(n=20)
+			if log_events:
+				with st.expander(f"Ultimos {len(log_events)} eventos de tu sesion", expanded=True):
+					for idx, event in enumerate(reversed(log_events), 1):
+						ts = event.get("timestamp", "?")[:19]
+						evt = event.get("event", "?")
+						status_icon = "✅" if event.get("status") == "ok" else "❌"
+						resource = event.get("resource", "")
+						msg = event.get("message", "")
+						detail = f"{resource}" + (f" - {msg}" if msg else "")
+						st.write(f"{status_icon} **{ts}** | `{evt}` | {detail}")
+			else:
+				st.info("No hay eventos en esta sesion todavia.")
 
 		default_key = st.session_state.get("google_api_key", os.getenv("GOOGLE_API_KEY", ""))
 		api_key = st.text_input(
