@@ -1,4 +1,4 @@
-[client]
+[server]
 maxUploadSize = 250
 
 [logger]
