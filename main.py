@@ -399,7 +399,7 @@ def sync_project_to_chroma(target_dir: Path) -> None:
 		collection.delete(ids=stale_ids)
 
 
-def list_files_internal(base_path: Path, max_items: int = 200) -> list[str]:
+def list_files_internal(base_path: Path, max_items: int = 100) -> list[str]:
 	base_path = base_path.resolve()
 	results: list[str] = []
 	for path in sorted(base_path.rglob("*")):
@@ -756,13 +756,18 @@ def main() -> None:
 			else:
 				st.info("No hay eventos en esta sesion todavia.")
 
-		default_key = st.session_state.get("google_api_key", os.getenv("GOOGLE_API_KEY", ""))
 		api_key = st.text_input(
 			GOOGLE_API_KEY_LABEL,
-			value=default_key,	
+			value="",	
 			type="password",
 			help=GOOGLE_API_KEY_HELP,
 		)
+		
+		if st.button("🗑️ Limpiar API Key", use_container_width=True):
+			st.session_state.pop("active_api_key", None)
+			if "GOOGLE_API_KEY" in os.environ:
+				del os.environ["GOOGLE_API_KEY"]
+			st.rerun()
 
 		uploaded_zip = st.file_uploader(
 			ZIP_UPLOAD_LABEL,
@@ -808,7 +813,6 @@ def main() -> None:
 		st.error(GOOGLE_API_KEY_REQUIRED_ERROR)
 		st.stop()
 
-	st.session_state.google_api_key = api_key
 	os.environ["GOOGLE_API_KEY"] = api_key
 
 	if st.session_state.get("active_api_key") != api_key:
