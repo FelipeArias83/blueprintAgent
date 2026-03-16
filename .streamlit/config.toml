@@ -3,3 +3,6 @@ maxUploadSize = 100
 
 [logger]
 level = "info"
+
+[theme]
+primaryColor = "#FF6E40"
