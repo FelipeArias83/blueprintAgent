@@ -668,13 +668,12 @@ def render_chat(messages: list[Any]) -> None:
 
 
 def get_latest_readme_in_output() -> Path | None:
-	session_output_dir = get_session_output_dir()
-	if not session_output_dir.exists():
+	if not OUTPUT_DIR.exists():
 		return None
 
 	readme_files = [
 		path
-		for path in session_output_dir.rglob("*")
+		for path in OUTPUT_DIR.rglob("*")
 		if path.is_file() and path.name.lower() == "readme.md"
 	]
 	if not readme_files:
