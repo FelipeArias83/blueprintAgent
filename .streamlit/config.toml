@@ -1,5 +1,5 @@
 [client]
-maxUploadSize = 100
+maxUploadSize = 250
 
 [logger]
 level = "info"
