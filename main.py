@@ -7,6 +7,7 @@ import tempfile
 import time
 import uuid
 import zipfile
+from datetime import datetime, timezone
 from time import perf_counter
 from pathlib import Path
 from typing import Any
@@ -58,9 +59,11 @@ from app_texts import (
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "output"
 CHROMA_DIR = BASE_DIR / "chroma_db"
+LOG_DIR = BASE_DIR / "logs"
 COLLECTION_NAME = "project_structure"
 SESSION_OUTPUT_PREFIX = "session_"
 CHROMA_REGISTRY_PATH = CHROMA_DIR / "collection_registry.json"
+MULTISESSION_LOG_PATH = LOG_DIR / "multisession.log"
 ARTIFACT_MAX_AGE_SECONDS = 24 * 60 * 60
 
 
@@ -78,11 +81,47 @@ class SimpleEmbeddingFunction(EmbeddingFunction[Documents]):
 		return vectors
 
 
+def log_multisession_event(
+	event: str,
+	status: str = "ok",
+	target_dir: Path | None = None,
+	resource: str = "",
+	message: str = "",
+	extra: dict[str, Any] | None = None,
+	session_id: str = "",
+	session_name: str = "",
+) -> None:
+	"""Write structured JSONL logs for session-aware operations."""
+	try:
+		LOG_DIR.mkdir(parents=True, exist_ok=True)
+		record = {
+			"timestamp": datetime.now(timezone.utc).isoformat(),
+			"event": event,
+			"status": status,
+			"session_id": session_id or st.session_state.get("session_id", ""),
+			"session_name": session_name or st.session_state.get("session_name", ""),
+			"target_dir": str(target_dir.resolve()) if target_dir else "",
+			"resource": resource,
+			"message": message,
+			"extra": extra or {},
+		}
+		with MULTISESSION_LOG_PATH.open("a", encoding="utf-8") as log_file:
+			log_file.write(json.dumps(record, ensure_ascii=True) + "\n")
+	except Exception:
+		# Logging must never break app flow.
+		pass
+
+
 def get_session_id() -> str:
 	session_id = st.session_state.get("session_id", "")
 	if not session_id:
 		session_id = uuid.uuid4().hex[:12]
 		st.session_state.session_id = session_id
+		log_multisession_event(
+			event="session_created",
+			session_id=session_id,
+			session_name=st.session_state.get("session_name", ""),
+		)
 	return session_id
 
 
@@ -116,6 +155,10 @@ def touch_collection_usage(collection_name: str) -> None:
 	registry = get_collection_registry()
 	registry[collection_name] = time.time()
 	save_collection_registry(registry)
+	log_multisession_event(
+		event="chroma_collection_used",
+		resource=collection_name,
+	)
 
 
 def get_chroma_collection(target_dir: Path):
@@ -138,6 +181,11 @@ def cleanup_expired_artifacts(max_age_seconds: int = ARTIFACT_MAX_AGE_SECONDS) -
 			try:
 				if now - path.stat().st_mtime > max_age_seconds:
 					shutil.rmtree(path, ignore_errors=True)
+					log_multisession_event(
+						event="cleanup_deleted",
+						resource=str(path),
+						message="expired session output directory removed",
+					)
 			except Exception:
 				continue
 
@@ -148,6 +196,11 @@ def cleanup_expired_artifacts(max_age_seconds: int = ARTIFACT_MAX_AGE_SECONDS) -
 		try:
 			if now - path.stat().st_mtime > max_age_seconds:
 				shutil.rmtree(path, ignore_errors=True)
+				log_multisession_event(
+					event="cleanup_deleted",
+					resource=str(path),
+					message="expired uploaded temp directory removed",
+				)
 		except Exception:
 			continue
 
@@ -170,6 +223,11 @@ def cleanup_expired_chroma_collections(max_age_seconds: int = ARTIFACT_MAX_AGE_S
 			pass
 		registry.pop(collection_name, None)
 		changed = True
+		log_multisession_event(
+			event="cleanup_deleted",
+			resource=collection_name,
+			message="expired chroma collection removed",
+		)
 
 	if changed:
 		save_collection_registry(registry)
@@ -359,11 +417,23 @@ def write_output_file(filename: str, content: str) -> str:
 	session_output_dir = get_session_output_dir()
 	try:
 		if not filename.strip():
+			log_multisession_event(
+				event="file_written",
+				status="error",
+				resource=filename,
+				message=TOOL_ERROR_EMPTY_FILENAME,
+			)
 			return json.dumps({"ok": False, "error": TOOL_ERROR_EMPTY_FILENAME}, ensure_ascii=True)
 
 		target = (session_output_dir / filename).resolve()
 		output_root = session_output_dir.resolve()
 		if not str(target).startswith(str(output_root)):
+			log_multisession_event(
+				event="file_written",
+				status="error",
+				resource=filename,
+				message=TOOL_ERROR_INVALID_OUTPUT_PATH,
+			)
 			return json.dumps(
 				{
 					"ok": False,
@@ -378,6 +448,12 @@ def write_output_file(filename: str, content: str) -> str:
 		exists = target.exists()
 		written = target.read_text(encoding="utf-8") if exists else ""
 		verified = exists and (written == content)
+		log_multisession_event(
+			event="file_written",
+			status="ok" if verified else "error",
+			resource=str(target.relative_to(BASE_DIR).as_posix()),
+			extra={"bytes": len(content.encode("utf-8"))},
+		)
 		return json.dumps(
 			{
 				"ok": verified,
@@ -388,6 +464,12 @@ def write_output_file(filename: str, content: str) -> str:
 			ensure_ascii=True,
 		)
 	except Exception as exc:
+		log_multisession_event(
+			event="file_written",
+			status="error",
+			resource=filename,
+			message=str(exc),
+		)
 		return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=True)
 
 
@@ -618,6 +700,24 @@ def main() -> None:
 
 	with st.sidebar:
 		st.subheader(SIDEBAR_CONFIG_SUBHEADER)
+		session_name = st.text_input(
+			"Nombre de sesion",
+			value=st.session_state.get("session_name", ""),
+			help="Identificador amigable para logs y aislamiento de sesion.",
+		)
+		normalized_session_name = session_name.strip()
+		if normalized_session_name != st.session_state.get("session_name", ""):
+			st.session_state.session_name = normalized_session_name
+			log_multisession_event(
+				event="session_name_updated",
+				status="ok" if normalized_session_name else "error",
+				message="session name updated" if normalized_session_name else "empty session name",
+			)
+
+		if not normalized_session_name:
+			st.warning("Debes ingresar un nombre de sesion para continuar.")
+			st.stop()
+
 		default_key = st.session_state.get("google_api_key", os.getenv("GOOGLE_API_KEY", ""))
 		api_key = st.text_input(
 			GOOGLE_API_KEY_LABEL,
@@ -646,8 +746,20 @@ def main() -> None:
 					st.session_state.uploaded_zip_signature = zip_signature
 					st.session_state.uploaded_temp_dir = str(temp_dir)
 					st.session_state.uploaded_target_dir = str(project_root)
+					log_multisession_event(
+						event="zip_uploaded",
+						target_dir=project_root,
+						resource=uploaded_zip.name,
+						extra={"size": uploaded_zip.size},
+					)
 					st.success(ZIP_UPLOAD_SUCCESS_TEMPLATE.format(name=uploaded_zip.name))
 				else:
+					log_multisession_event(
+						event="zip_uploaded",
+						status="error",
+						resource=uploaded_zip.name,
+						message=err,
+					)
 					st.error(ZIP_UPLOAD_ERROR_TEMPLATE.format(error=err))
 
 		active_target = st.session_state.get("uploaded_target_dir", "")
