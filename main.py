@@ -399,7 +399,7 @@ def sync_project_to_chroma(target_dir: Path) -> None:
 		collection.delete(ids=stale_ids)
 
 
-def list_files_internal(base_path: Path, max_items: int = 100) -> list[str]:
+def list_files_internal(base_path: Path, max_items: int = 200) -> list[str]:
 	base_path = base_path.resolve()
 	results: list[str] = []
 	for path in sorted(base_path.rglob("*")):
