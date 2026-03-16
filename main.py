@@ -1,8 +1,11 @@
 import json
+import hashlib
 import os
 import re
 import shutil
 import tempfile
+import time
+import uuid
 import zipfile
 from time import perf_counter
 from pathlib import Path
@@ -56,6 +59,9 @@ BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "output"
 CHROMA_DIR = BASE_DIR / "chroma_db"
 COLLECTION_NAME = "project_structure"
+SESSION_OUTPUT_PREFIX = "session_"
+CHROMA_REGISTRY_PATH = CHROMA_DIR / "collection_registry.json"
+ARTIFACT_MAX_AGE_SECONDS = 24 * 60 * 60
 
 
 class SimpleEmbeddingFunction(EmbeddingFunction[Documents]):
@@ -72,12 +78,101 @@ class SimpleEmbeddingFunction(EmbeddingFunction[Documents]):
 		return vectors
 
 
-def get_chroma_collection():
+def get_session_id() -> str:
+	session_id = st.session_state.get("session_id", "")
+	if not session_id:
+		session_id = uuid.uuid4().hex[:12]
+		st.session_state.session_id = session_id
+	return session_id
+
+
+def get_session_output_dir() -> Path:
+	session_output_dir = OUTPUT_DIR / f"{SESSION_OUTPUT_PREFIX}{get_session_id()}"
+	session_output_dir.mkdir(parents=True, exist_ok=True)
+	return session_output_dir
+
+
+def get_collection_registry() -> dict[str, float]:
+	if not CHROMA_REGISTRY_PATH.exists():
+		return {}
+	try:
+		content = json.loads(CHROMA_REGISTRY_PATH.read_text(encoding="utf-8"))
+		return content if isinstance(content, dict) else {}
+	except Exception:
+		return {}
+
+
+def save_collection_registry(registry: dict[str, float]) -> None:
+	CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+	CHROMA_REGISTRY_PATH.write_text(json.dumps(registry, ensure_ascii=True), encoding="utf-8")
+
+
+def get_chroma_collection_name(target_dir: Path) -> str:
+	project_hash = hashlib.sha1(str(target_dir.resolve()).encode("utf-8")).hexdigest()[:12]
+	return f"{COLLECTION_NAME}_{get_session_id()}_{project_hash}"
+
+
+def touch_collection_usage(collection_name: str) -> None:
+	registry = get_collection_registry()
+	registry[collection_name] = time.time()
+	save_collection_registry(registry)
+
+
+def get_chroma_collection(target_dir: Path):
 	client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-	return client.get_or_create_collection(
-		name=COLLECTION_NAME,
+	collection_name = get_chroma_collection_name(target_dir)
+	collection = client.get_or_create_collection(
+		name=collection_name,
 		embedding_function=SimpleEmbeddingFunction(),
 	)
+	touch_collection_usage(collection_name)
+	return collection
+
+
+def cleanup_expired_artifacts(max_age_seconds: int = ARTIFACT_MAX_AGE_SECONDS) -> None:
+	now = time.time()
+	if OUTPUT_DIR.exists():
+		for path in OUTPUT_DIR.glob(f"{SESSION_OUTPUT_PREFIX}*"):
+			if not path.is_dir():
+				continue
+			try:
+				if now - path.stat().st_mtime > max_age_seconds:
+					shutil.rmtree(path, ignore_errors=True)
+			except Exception:
+				continue
+
+	temp_root = Path(tempfile.gettempdir())
+	for path in temp_root.glob("asist_proj_*"):
+		if not path.is_dir():
+			continue
+		try:
+			if now - path.stat().st_mtime > max_age_seconds:
+				shutil.rmtree(path, ignore_errors=True)
+		except Exception:
+			continue
+
+
+def cleanup_expired_chroma_collections(max_age_seconds: int = ARTIFACT_MAX_AGE_SECONDS) -> None:
+	registry = get_collection_registry()
+	if not registry:
+		return
+
+	now = time.time()
+	client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+	changed = False
+
+	for collection_name, last_used in list(registry.items()):
+		if now - float(last_used) <= max_age_seconds:
+			continue
+		try:
+			client.delete_collection(name=collection_name)
+		except Exception:
+			pass
+		registry.pop(collection_name, None)
+		changed = True
+
+	if changed:
+		save_collection_registry(registry)
 
 
 def clean_candidate_path(raw: str) -> str:
@@ -175,7 +270,7 @@ def read_file_snippet(path: Path, max_chars: int = 3000) -> str:
 
 
 def sync_project_to_chroma(target_dir: Path) -> None:
-	collection = get_chroma_collection()
+	collection = get_chroma_collection(target_dir)
 	target_dir = target_dir.resolve()
 	target_root = str(target_dir)
 
@@ -243,7 +338,7 @@ def list_files_internal(base_path: Path, max_items: int = 200) -> list[str]:
 
 def get_retrieved_context(query: str, target_dir: Path, n_results: int = 6) -> str:
 	try:
-		collection = get_chroma_collection()
+		collection = get_chroma_collection(target_dir)
 		results = collection.query(
 			query_texts=[query],
 			n_results=n_results,
@@ -261,13 +356,13 @@ def get_retrieved_context(query: str, target_dir: Path, n_results: int = 6) -> s
 @tool
 def write_output_file(filename: str, content: str) -> str:
 	"""Create a file inside /output and verify it was written correctly."""
-	OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+	session_output_dir = get_session_output_dir()
 	try:
 		if not filename.strip():
 			return json.dumps({"ok": False, "error": TOOL_ERROR_EMPTY_FILENAME}, ensure_ascii=True)
 
-		target = (OUTPUT_DIR / filename).resolve()
-		output_root = OUTPUT_DIR.resolve()
+		target = (session_output_dir / filename).resolve()
+		output_root = session_output_dir.resolve()
 		if not str(target).startswith(str(output_root)):
 			return json.dumps(
 				{
@@ -469,11 +564,14 @@ def render_chat(messages: list[Any]) -> None:
 
 
 def get_latest_readme_in_output() -> Path | None:
-	if not OUTPUT_DIR.exists():
+	session_output_dir = get_session_output_dir()
+	if not session_output_dir.exists():
 		return None
 
 	readme_files = [
-		path for path in OUTPUT_DIR.rglob("*") if path.is_file() and path.name.lower() == "readme.md"
+		path
+		for path in session_output_dir.rglob("*")
+		if path.is_file() and path.name.lower() == "readme.md"
 	]
 	if not readme_files:
 		return None
@@ -509,6 +607,11 @@ def render_sidebar_tutorial() -> None:
 
 def main() -> None:
 	load_dotenv()
+	if not st.session_state.get("cleanup_done"):
+		cleanup_expired_artifacts()
+		cleanup_expired_chroma_collections()
+		st.session_state.cleanup_done = True
+
 	st.set_page_config(page_title=APP_PAGE_TITLE, page_icon=APP_PAGE_ICON)
 	st.title(APP_TITLE)
 	st.caption(APP_CAPTION)
