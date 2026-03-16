@@ -116,8 +116,8 @@ def extract_uploaded_zip(uploaded_file: Any) -> tuple[bool, str, Path | None, Pa
 			total_uncompressed = 0
 			for entry in file_entries:
 				total_uncompressed += entry.file_size
-				if total_uncompressed > 250 * 1024 * 1024:
-					raise ValueError("el ZIP supera 250 MB descomprimido")
+				if total_uncompressed > 700 * 1024 * 1024:
+					raise ValueError("el ZIP supera 700 MB descomprimido")
 
 				entry_target = (temp_dir / entry.filename).resolve()
 				if not str(entry_target).startswith(str(resolved_temp)):
