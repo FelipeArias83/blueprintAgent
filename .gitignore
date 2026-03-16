@@ -1,8 +1,20 @@
+# Python
 .venv/
 __pycache__/
 *.py[cod]
+
+# Secrets
 .env
 .env.*
+
+# Databases
 chroma_db/
 *.sqlite3
 *.db
+
+# Logs
+logs/
+
+# Generated outputs (keep folder via .gitkeep)
+output/**
+!output/.gitkeep
