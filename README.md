@@ -202,4 +202,4 @@ Se instalan desde `requirements.txt`:
 
 ## Licencia
 
-Sin licencia definida actualmente en el repositorio.
+Este proyecto no tiene una licencia definida actualmente. Todos los derechos sobre el código fuente están reservados. Se actualizará esta sección en el futuro si se decide liberar bajo una licencia de código abierto.
