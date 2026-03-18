@@ -28,7 +28,7 @@ from app_texts import (
 	ZIP_UPLOAD_LABEL,
 	ZIP_UPLOAD_SUCCESS_TEMPLATE,
 )
-from config import BASE_DIR, OUTPUT_DIR
+from config import BASE_DIR, CHROMA_DIR, OUTPUT_DIR
 from graph import build_graph
 from utils import (
 	_extract_text,
@@ -36,7 +36,9 @@ from utils import (
 	cleanup_expired_chroma_collections,
 	cleanup_uploaded_project,
 	extract_uploaded_zip,
+	get_chroma_collection_rows,
 	get_last_n_log_events,
+	inspect_chroma_db,
 	log_multisession_event,
 )
 
@@ -92,6 +94,88 @@ def render_sidebar_tutorial() -> None:
 	with st.sidebar:
 		st.header(SIDEBAR_GUIDE_HEADER)
 		st.markdown(TUTORIAL_MARKDOWN)
+
+
+def render_chroma_console_tab() -> None:
+	st.subheader("Consola rapida Chroma")
+	st.caption("Inspecciona una base local usando chromadb.PersistentClient(path=...).")
+
+	default_path = st.session_state.get("chroma_console_path", str(CHROMA_DIR))
+	db_path = st.text_input(
+		"Ruta local de ChromaDB",
+		value=default_path,
+		help="Ejemplo: ./chroma_db o C:\\ruta\\a\\chroma_db",
+		key="chroma-console-path-input",
+	)
+	include_samples = st.checkbox("Mostrar IDs de ejemplo", value=False)
+
+	if st.button("Inspeccionar Chroma", use_container_width=True):
+		st.session_state.chroma_console_path = db_path
+		result = inspect_chroma_db(db_path=db_path, include_samples=include_samples, sample_size=5)
+		st.session_state.chroma_console_result = result
+
+	result = st.session_state.get("chroma_console_result")
+	if not result:
+		return
+
+	if not result.get("ok"):
+		st.error(f"Error: {result.get('error', 'error desconocido')}")
+		return
+
+	st.success(f"Ruta: {result.get('path')}")
+	st.write(f"Colecciones encontradas: {result.get('collections_count', 0)}")
+	st.write(f"Archivo sqlite detectado: {'si' if result.get('sqlite_exists') else 'no'}")
+
+	collections = result.get("collections", [])
+	if collections:
+		st.dataframe(collections, use_container_width=True)
+		collection_names = [item.get("name", "") for item in collections if item.get("name")]
+		selected_collection = st.selectbox(
+			"Coleccion",
+			options=collection_names,
+			key="chroma-console-selected-collection",
+		)
+		rows_limit = st.number_input(
+			"Filas a mostrar",
+			min_value=1,
+			max_value=200,
+			value=10,
+			step=1,
+			key="chroma-console-rows-limit",
+		)
+		if st.button("Ver datos guardados", use_container_width=True):
+			rows_result = get_chroma_collection_rows(
+				db_path=result.get("path", db_path),
+				collection_name=selected_collection,
+				limit=int(rows_limit),
+			)
+			st.session_state.chroma_console_rows_result = rows_result
+	else:
+		st.info("No se encontraron colecciones en la ruta indicada.")
+
+	rows_result = st.session_state.get("chroma_console_rows_result")
+	if rows_result:
+		if not rows_result.get("ok"):
+			st.error(f"Error leyendo filas: {rows_result.get('error', 'error desconocido')}")
+		else:
+			st.write(
+				f"Coleccion `{rows_result.get('collection')}`: {rows_result.get('rows_count', 0)} filas"
+			)
+			rows = rows_result.get("rows", [])
+			if rows:
+				st.dataframe(rows, use_container_width=True)
+			else:
+				st.info("No hay filas para mostrar en esa coleccion.")
+
+	code_path = result.get("path", db_path)
+	st.code(
+		"# Conexion a tu base local\n"
+		f"client = chromadb.PersistentClient(path=r\"{code_path}\")\n"
+		"collections = client.list_collections()\n"
+		"for col in collections:\n"
+		"    print(col.name, col.count())",
+		language="python",
+	)
 
 
 def main() -> None:
@@ -194,33 +278,40 @@ def main() -> None:
 		if active_target:
 			st.caption(ZIP_ACTIVE_PROJECT_TEMPLATE.format(path=active_target))
 
-	if not api_key:
-		st.error(GOOGLE_API_KEY_REQUIRED_ERROR)
-		st.stop()
-
-	os.environ["GOOGLE_API_KEY"] = api_key
-
-	if st.session_state.get("active_api_key") != api_key:
-		st.session_state.active_api_key = api_key
-		st.session_state.graph = build_graph()
-	elif "graph" not in st.session_state:
-		st.session_state.graph = build_graph()
-	if "messages" not in st.session_state:
-		st.session_state.messages = []
-
 	render_sidebar_tutorial()
-	render_chat(st.session_state.messages)
-	render_readme_download()
+	tab_chat, tab_chroma = st.tabs(["Chat", "Consola Chroma"])
 
-	prompt = st.chat_input(CHAT_INPUT_PLACEHOLDER)
-	if not prompt:
-		return
+	with tab_chroma:
+		render_chroma_console_tab()
 
-	new_state = {"messages": [*st.session_state.messages, HumanMessage(content=prompt)]}
-	result = st.session_state.graph.invoke(new_state)
-	st.session_state.messages = result["messages"]
+	with tab_chat:
+		if not api_key:
+			st.error(GOOGLE_API_KEY_REQUIRED_ERROR)
+			st.info("Puedes usar la pestaña 'Consola Chroma' sin API key.")
+			return
 
-	st.rerun()
+		os.environ["GOOGLE_API_KEY"] = api_key
+
+		if st.session_state.get("active_api_key") != api_key:
+			st.session_state.active_api_key = api_key
+			st.session_state.graph = build_graph()
+		elif "graph" not in st.session_state:
+			st.session_state.graph = build_graph()
+		if "messages" not in st.session_state:
+			st.session_state.messages = []
+
+		render_chat(st.session_state.messages)
+		render_readme_download()
+
+		prompt = st.chat_input(CHAT_INPUT_PLACEHOLDER)
+		if not prompt:
+			return
+
+		new_state = {"messages": [*st.session_state.messages, HumanMessage(content=prompt)]}
+		result = st.session_state.graph.invoke(new_state)
+		st.session_state.messages = result["messages"]
+
+		st.rerun()
 
 
 if __name__ == "__main__":

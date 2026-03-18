@@ -414,6 +414,94 @@ def get_retrieved_context(query: str, target_dir: Path, n_results: int = 6) -> s
         return CHROMA_QUERY_ERROR_TEMPLATE.format(error=exc)
 
 
+def inspect_chroma_db(
+    db_path: str | Path,
+    include_samples: bool = False,
+    sample_size: int = 3,
+) -> dict[str, Any]:
+    """Inspect a local ChromaDB folder and return collection metadata."""
+    try:
+        resolved = Path(db_path).expanduser().resolve()
+        if not resolved.exists() or not resolved.is_dir():
+            return {
+                "ok": False,
+                "error": f"ruta invalida o inexistente: {resolved}",
+                "path": str(resolved),
+            }
+
+        client = chromadb.PersistentClient(path=str(resolved))
+        collections = client.list_collections()
+        items: list[dict[str, Any]] = []
+
+        for col in collections:
+            item: dict[str, Any] = {
+                "name": col.name,
+                "count": col.count(),
+            }
+            if include_samples and sample_size > 0:
+                peek_data = col.peek(limit=sample_size)
+                item["sample_ids"] = peek_data.get("ids", [])
+            items.append(item)
+
+        sqlite_path = resolved / "chroma.sqlite3"
+        return {
+            "ok": True,
+            "path": str(resolved),
+            "sqlite_exists": sqlite_path.exists(),
+            "collections": items,
+            "collections_count": len(items),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "path": str(Path(db_path).expanduser()),
+        }
+
+
+def get_chroma_collection_rows(
+    db_path: str | Path,
+    collection_name: str,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Return persisted rows from one Chroma collection using peek()."""
+    try:
+        resolved = Path(db_path).expanduser().resolve()
+        client = chromadb.PersistentClient(path=str(resolved))
+        collection = client.get_collection(name=collection_name)
+
+        safe_limit = max(1, min(int(limit), 200))
+        payload = collection.peek(limit=safe_limit)
+        ids = payload.get("ids", []) or []
+        docs = payload.get("documents", []) or []
+        metas = payload.get("metadatas", []) or []
+
+        rows: list[dict[str, Any]] = []
+        for idx, row_id in enumerate(ids):
+            rows.append(
+                {
+                    "id": row_id,
+                    "document": docs[idx] if idx < len(docs) else "",
+                    "metadata": metas[idx] if idx < len(metas) else {},
+                }
+            )
+
+        return {
+            "ok": True,
+            "path": str(resolved),
+            "collection": collection_name,
+            "rows": rows,
+            "rows_count": len(rows),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "path": str(Path(db_path).expanduser()),
+            "collection": collection_name,
+        }
+
+
 # ---------------------------------------------------------------------------
 # Message helpers
 # ---------------------------------------------------------------------------
