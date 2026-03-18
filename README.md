@@ -17,6 +17,37 @@ Aplicacion Streamlit para analizar la estructura de proyectos y generar document
   - escribir artefactos dentro de `output/`
 - Limpieza automatica de artefactos y colecciones expiradas (24 horas por defecto).
 
+## Ventajas de la app
+
+- Reduce el trabajo manual de documentar proyectos y estandariza entregables.
+- Permite analizar repos grandes por partes, sin enviar todo el codigo al modelo en cada pregunta.
+- Mantiene contexto reutilizable por sesion para responder mas rapido en preguntas sucesivas.
+- Evita sobreescrituras peligrosas: el agente solo escribe dentro de `output/session_<id>/`.
+- Facilita auditoria y soporte con logs por sesion en JSONL.
+- Funciona en modo local con ChromaDB, sin depender de un servicio de vector DB externo.
+
+## LangGraph y ChromaDB: como ahorran tokens
+
+El ahorro de tokens viene de combinar orquestacion (LangGraph) + recuperacion selectiva (ChromaDB):
+
+1. **Indexacion por chunks**
+  - Los archivos se fragmentan en bloques pequenos y se indexan una sola vez por sesion.
+  - En lugar de enviar un proyecto completo de miles de lineas en cada prompt, solo se buscan los chunks relevantes.
+
+2. **Recuperacion semantica previa al LLM**
+  - ChromaDB devuelve contexto parecido a la consulta del usuario.
+  - El prompt al modelo se arma con ese subconjunto, reduciendo tokens de entrada y ruido.
+
+3. **Flujo controlado con LangGraph**
+  - LangGraph separa el proceso en nodos (razonamiento y herramientas), evitando llamadas innecesarias al modelo.
+  - Cuando una herramienta resuelve parte del problema (listar archivos, buscar texto, escribir salida), se limita el uso del LLM a decisiones de alto valor.
+
+4. **Menos re-trabajo entre turnos**
+  - Como la sesion mantiene coleccion y artefactos, no hay que reconstruir contexto completo en cada interaccion.
+  - Resultado: menor costo operativo, menor latencia percibida y respuestas mas consistentes.
+
+En terminos practicos, esta arquitectura mejora el balance **costo/calidad**: mas precision contextual con menos tokens que un enfoque de "pegar todo el repo en el prompt".
+
 ## Stack
 
 - Python
@@ -104,6 +135,32 @@ Luego abre la URL local que muestra Streamlit (por defecto `http://localhost:850
    - nodo de razonamiento (LLM)
    - nodo de herramientas (`write_output_file`, `list_current_files`, `search_in_files`)
 5. Si se solicita un archivo, lo escribe y verifica dentro de `output/session_<id>/`.
+
+## Ventajas en una empresa
+
+- **Onboarding tecnico mas rapido**: nuevos integrantes pueden entender estructura y decisiones del repositorio en minutos.
+- **Estandarizacion de documentacion**: genera READMEs y artefactos con formato consistente entre equipos.
+- **Menor tiempo de soporte interno**: los equipos reducen preguntas repetitivas sobre arquitectura y ubicacion de componentes.
+- **Control y trazabilidad**: logs por sesion para seguimiento de uso, auditoria y postmortem.
+- **Escalabilidad operativa**: aislamiento por sesion para atender multiples usuarios o analisis paralelos.
+- **Alineacion con gobierno de datos**: al usar almacenamiento local de embeddings, se reduce exposicion de codigo en servicios externos.
+
+## Evolucion sugerida del proyecto
+
+1. **Corto plazo**
+  - Plantillas de salida por tipo de documento (README, ADR, runbook, checklist de despliegue).
+  - Metrica visible en UI: tiempo de respuesta, tokens estimados y costo estimado por sesion.
+  - Mejora de prompts por tarea (documentacion, refactor, deteccion de riesgos).
+
+2. **Mediano plazo**
+  - Integracion con GitHub/GitLab para analizar ramas, PRs y diffs automaticamente.
+  - Control de acceso por rol y espacios de trabajo por equipo.
+  - Versionado de artefactos generados con historial de cambios.
+
+3. **Largo plazo**
+  - Evaluacion automatica de calidad de respuestas (hallucination checks y score de cobertura).
+  - Multiagente especializado (arquitectura, testing, seguridad, performance).
+  - Integracion con CI/CD para generar y validar documentacion en cada release.
 
 ## Archivos y carpetas generados
 
